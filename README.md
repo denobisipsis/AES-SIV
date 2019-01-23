@@ -8,7 +8,9 @@ Included AES-CMAC &amp; AES_PMAC
 Non Misuse Resistant cipher
 
 aes_cmac  https://tools.ietf.org/html/rfc4493
+
 aes_pmac  http://web.cs.ucdavis.edu/~rogaway/ocb/pmac-bak.htm
+
 AES-SIV   https://tools.ietf.org/html/rfc5297
 
 # USAGE 
