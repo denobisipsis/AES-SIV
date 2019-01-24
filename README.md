@@ -29,19 +29,25 @@ $x->aes_pmac($data, $key);
 $x->OMAC2($data, $key);
 
 $x->aes_siv_encrypt($Key,$Sn,$plaintext) 
+
 $x->aes_siv_decrypt($Key,$Sn,$cipher) 
 
 [$Sn is an array of additional data (for example AAD or nonce)]
 
 $x->aes_eax_encrypt($Message,$Key,$Nonce,$Header) 
+
 $x->aes_eax_decrypt($Cipher,$Key,$Nonce,$Header) 
 
 # TEST VECTORS
 
 $x->test_cmac();
+
 $x->test_pmac();
+
 $x->test_OMAC2();
+
 $x->test_aes_siv();
+
 $x->test_aes_eax();
 	
 # License
