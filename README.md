@@ -1,9 +1,9 @@
 # AES-SIV
-Included AES-CMAC &amp; AES_PMAC
+Included AES-CMAC &amp; AES_PMAC, OMAC2 & EAX
 
 *  Copyright I-2019 denobisipsis
 
-# AES SIV, CMAC & PMAC
+# AES SIV, CMAC & PMAC, AES EAX, OMAC-2
 
 Non Misuse Resistant cipher
 
