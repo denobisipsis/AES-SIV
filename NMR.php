@@ -56,7 +56,7 @@ class NMR
 	      x^128 + x^7 + x^2 + x + 1. 
 	*/
 	
-	$s	= sizeof($X)-1;
+	$s	 = sizeof($X)-1;
 	
 	if ($s==3) $R=0x00000087;
 	else	   $R=0x001b;
@@ -82,20 +82,24 @@ class NMR
 	return  strrev($Z);	
 	} 
 
-    private function generateKeys($sX,$key)
+    private function generateKeys($sX,$key, $omac2)
     	{
         $text      = str_repeat("\0", 16);	
         $lVal      = openssl_encrypt($text, 'aes-'.($sX*128).'-ecb', $key, 1|OPENSSL_ZERO_PADDING);					
 	$Uints     = array_values(unpack('L*',strrev($lVal)));	
 	$temp	   = $this->double($Uints);	
-	$k0="";foreach ($temp as $z) $k0.=pack("L",$z);			
+	$k0="";foreach ($temp as $z) $k0.=pack("L",$z);	
+	
+	if ($omac2)
+		return array(strrev($k0),$this->L_1($lVal)); // L.u and L.u 2  
+		
 	$k1="";foreach ($this->double($temp) as $z) $k1.=pack("L",$z);	
-        return array(strrev($k0),strrev($k1));	    
+        return array(strrev($k0),strrev($k1));	        
 	}
 
-    private function MAC($data,$key,$sX)
+    private function MAC($data,$key,$sX, $omac2=0)
     	{
-        $Blocks  = $this->Blocks($data, $this->generateKeys($sX,$key));	
+        $Blocks  = $this->Blocks($data, $this->generateKeys($sX,$key,$omac2));	
         $MAC  	 = str_repeat("\0", 16);	
 						
         foreach ($Blocks as $block) 
@@ -157,7 +161,32 @@ class NMR
 		}	
         return $ks;
 	}
+    
+    private function L_1($k)
+    	{
+	/** 
+	    Let L(-1) be L>>1 if the last bit of L is 0, 
+	    and 
+	    let L(-1) be L>>1 xor 0x80000000000000000000000000000043 otherwise 
+	*/
+		
+	$Uints   = unpack('J*',$k);													
+	$s2	 = sizeof($Uints);
+	$lH 	 = $lL = 0;						
+	$lH 	^= $Uints[$s2-1];
+	$lL 	^= $Uints[$s2];		
+
+	$xLSB 	 = $lL;	 				
+	$lL   	 = ($lH << 63)|($lL >> 1)& PHP_INT_MAX;
+	$lH      = ($lH >> 1)		 & PHP_INT_MAX;
+	if ($xLSB & 1)
+		{
+		$lH	^= 0x8000000000000000;
+		$lL 	^= 0x0000000000000043;
+		}
 	
+	return pack('J',$lH).pack('J',$lL);	    
+	}	
     public function aes_pmac($data, $key) 
    	{ 
 	/**
@@ -198,33 +227,12 @@ class NMR
 	
 	$Sigma  ^= $this->pad($M[$m]); 
 		
-	if (strlen($M[$m])==16)
-		{
+	if (strlen($M[$m])==16)		
 		/** 
 		    if |M[m]|=n then S = S xor L(-1)
-		    Let L(-1) be L>>1 if the last bit of L is 0, 
-		    and 
-		    let L(-1) be L>>1 xor 0x80000000000000000000000000000043 otherwise 
-		*/
+		*/		
+		$Sigma  ^= $this->L_1($L[0]);
 		
-		$Uints   = unpack('J*',$L[0]);													
-		$s2	 = sizeof($Uints);
-		$lH 	 = $lL = 0;						
-		$lH 	^= $Uints[$s2-1];
-		$lL 	^= $Uints[$s2];		
-	
-		$xLSB 	 = $lL;	 				
-		$lL   	 = ($lH << 63)|($lL >> 1)& PHP_INT_MAX;
-		$lH      = ($lH >> 1)		 & PHP_INT_MAX;
-		if ($xLSB & 1)
-			{
-			$lH	^= 0x8000000000000000;
-			$lL 	^= 0x0000000000000043;
-			}
-		
-		$Sigma  ^=pack('J',$lH).pack('J',$lL);
-		}
-
 	$FullTag = openssl_encrypt($Sigma, 'aes-'.($sX*128).'-ecb', $key, 1|OPENSSL_ZERO_PADDING);
         return bin2hex($FullTag);		
     	} 	    
@@ -232,48 +240,8 @@ class NMR
  
     public function OMAC2($data,$key)
     	{
-	$sX	 = strlen($key)/16;
-	
-        $text      = str_repeat("\0", 16);	
-        $lVal      = openssl_encrypt($text, 'aes-'.($sX*128).'-ecb', $key, 1|OPENSSL_ZERO_PADDING);
-	 					
-	$Uints     = array_values(unpack('L*',strrev($lVal)));	
-	$temp	   = $this->double($Uints);	
-	$k0="";foreach ($temp as $z) $k0.=pack("L",$z);	
-															
-	$s2	 = sizeof($Uints);
-
-	$lH 	 = $lL = 0;
-	$Uints   = unpack('J*',($lVal));
-							
-	$lH 	^= $Uints[1];
-	$lL 	^= $Uints[2];		
-
-	$xLSB 	 = $lL;	 				
-	$lL   	 = ($lH << 63)|($lL >> 1)& PHP_INT_MAX;
-	$lH      = ($lH >> 1)		 & PHP_INT_MAX;
-	if ($xLSB & 1)
-		{
-		$lH	^= 0x8000000000000000;
-		$lL 	^= 0x0000000000000043;
-		}
-					
-	$k1=pack('J',$lH).pack('J',$lL);
-		
-        $keys = array(strrev($k0),($k1)); // L.u and L.u 2
-		
-        $data      = str_split(($data), 16);	
-		
-	$Tag	   = str_repeat(chr(0), 16);
-	for ($k=0;$k<sizeof($data)-1;$k++)		
-		$Tag     = openssl_encrypt($data[$k] ^ $Tag , 'aes-'.($sX*128).'-ecb', $key, 1|OPENSSL_ZERO_PADDING);
-			
-	if (strlen($data[$k])==16) $data[$k] = $data[$k] ^ $Tag ^ $keys[0];	
-	else 			   $data[$k] = $this->pad($data[$k]) ^ $Tag ^ $keys[1];
-	
-	$Tag = openssl_encrypt($data[$k]  , 'aes-'.($sX*128).'-ecb', $key, 1|OPENSSL_ZERO_PADDING);
-	
-	return bin2hex($Tag);   	    
+	$sX	 = strlen($key)/16;	
+	return bin2hex($this->MAC($data,$key,$sX,1));   	    
 	}
 	
    private function OMAC($data,$key,$n)
@@ -282,6 +250,49 @@ class NMR
 	return pack("H*",$this->aes_cmac(str_repeat("\0", 15).chr($n).$data,$key)); 
 	}
 
+    private function counter_inc($addition,$COUNTER)
+    	{
+	/** 
+	More formally, 
+	
+	   For 32 bit addition the counter is incremented as:
+	
+              SALT=leftmost(X,96)
+
+              n=rightmost(X,32)
+
+              X+i = SALT || (n + i mod 2^32).
+	
+	   For 64 bit addition the counter is incremented as:
+	
+              SALT=leftmost(X,64)
+
+              n=rightmost(X,64)
+
+              X+i = SALT || (n + i mod 2^64).
+	*/	
+	if      ($addition=='32b')
+		{$n=4;$pack="N";}
+	else if ($addition=='64b')
+		{$n=8;$pack="J";}
+
+	$SALT = substr($COUNTER,0,16-$n);			
+	extract(unpack($pack."count",substr($COUNTER,-$n)));	
+	return $SALT.pack($pack, $count+1);	    
+	}
+
+    public function ctr($M,$COUNTER,$sX,$key)
+    	{
+	$M     	   = str_split($M,16);
+	$cipher    = "";
+	for ($k=0;$k<sizeof($M);$k++)
+		{
+		$cipher  .= openssl_encrypt($COUNTER, 'aes-'.($sX*128).'-ecb', $key, 1|OPENSSL_ZERO_PADDING) ^ $M[$k];			
+		$COUNTER  = $this->counter_inc('32b',$COUNTER);
+		}
+	return $cipher;	    
+	}
+		
     public function aes_eax_decrypt($cipher,$key,$nonce,$header)
     	{
 	/** http://web.cs.ucdavis.edu/~rogaway/papers/eax.pdf */
@@ -295,32 +306,15 @@ class NMR
 		
 	$sX    	   = strlen($key)/16;
 	
-	$MAC_NONCE = $COUNTER = $this->OMAC($nonce,$key,0);
+	$MAC_NONCE = $this->OMAC($nonce,$key,0);
 	$MAC_H     = $this->OMAC($header,$key,1);	
 	$MAC_C 	   = $this->OMAC($cipher,$key,2);
 	
 	$Tag 	   = substr($MAC_NONCE ^ $MAC_H ^ $MAC_C,0,16);
 	
-	if ($Tag!=$ETag) die('Invalid');
+	if ($Tag!=$ETag) die('Invalid');		
 	
-	$M     	   = str_split($cipher,16);
-	
-	$addition  = '32b';	
-	if      ($addition=='32b')
-		{$n=4;$pack="N";}
-	else if ($addition=='64b')
-		{$n=8;$pack="J";}
-
-	$decipher = "";
-	for ($k=0;$k<sizeof($M);$k++)
-		{
-		$decipher.= openssl_encrypt($COUNTER, 'aes-'.($sX*128).'-ecb', $key, 1|OPENSSL_ZERO_PADDING) ^ $M[$k];		
-		$SALT = substr($COUNTER,0,16-$n);			
-		extract(unpack($pack."count",substr($COUNTER,-$n)));	
-		$COUNTER  = $SALT.pack($pack, $count+1);
-		}		
-	
-	return bin2hex($decipher);	
+	return bin2hex($this->ctr($cipher,$MAC_NONCE,$sX,$key));	
 	}
 		
     public function aes_eax_encrypt($data,$key,$nonce,$header)
@@ -328,28 +322,13 @@ class NMR
 	/** http://web.cs.ucdavis.edu/~rogaway/papers/eax.pdf */
 	$sX    	   = strlen($key)/16;
 	
-	$MAC_NONCE = $COUNTER = $this->OMAC($nonce,$key,0);
+	$MAC_NONCE = $this->OMAC($nonce,$key,0);
 	$MAC_H     = $this->OMAC($header,$key,1);	
 
-	$M     	   = str_split($data,16);
+	$cipher    = $this->ctr($data,$MAC_NONCE,$sX,$key);		
 	
-	$addition  = '32b';	
-	if      ($addition=='32b')
-		{$n=4;$pack="N";}
-	else if ($addition=='64b')
-		{$n=8;$pack="J";}
-
-	$cipher = "";
-	for ($k=0;$k<sizeof($M);$k++)
-		{
-		$cipher.= openssl_encrypt($COUNTER, 'aes-'.($sX*128).'-ecb', $key, 1|OPENSSL_ZERO_PADDING) ^ $M[$k];		
-		$SALT = substr($COUNTER,0,16-$n);			
-		extract(unpack($pack."count",substr($COUNTER,-$n)));	
-		$COUNTER  = $SALT.pack($pack, $count+1);
-		}		
-	
-	$MAC_C 	  = $this->OMAC($cipher ,$key , 2);				
-	$Tag 	  = $MAC_NONCE ^ $MAC_H ^ $MAC_C;	
+	$MAC_C 	   = $this->OMAC($cipher ,$key , 2);				
+	$Tag 	   = $MAC_NONCE ^ $MAC_H ^ $MAC_C;	
 	
 	return bin2hex($cipher.$Tag);	
 	}
@@ -389,25 +368,8 @@ class NMR
 	$sX     = strlen($K)/16;
 	$K2     = substr($K,$sX*8);
 	
-	$Q	= $V & pack("H*","ffffffffffffffff7fffffff7fffffff");	
-
-	$addition  = '32b';
-	
-	if      ($addition=='32b')
-		{$n=4;$pack="N";}
-	else if ($addition=='64b')
-		{$n=8;$pack="L";}
-	
-	$Sn     = str_split($C,16);	
-	$P	= "";
-	foreach ($Sn as $m)
-		{
-		$P   .= openssl_encrypt($Q, 'aes-'.($sX*64).'-ecb', $K2, 1|OPENSSL_ZERO_PADDING) ^ $m ;
-		$SALT = substr($Q,0,16-$n);
-		extract(unpack($pack."count",substr($Q,-$n)));	
-		$Q    = $SALT.pack($pack, $count+1);
-		}
-	
+	$Q	= $V & pack("H*","ffffffffffffffff7fffffff7fffffff");			
+	$P	= $this->ctr($C,$Q,$sX/2,$K);	
 	$T 	= $this->S2V($K,$S,$P);
 	
 	if ($T==$V) return bin2hex($P);
@@ -416,7 +378,8 @@ class NMR
       
     public function aes_siv_encrypt($K,$Sn="",$S="") 
         {
-	if (strlen($K)<32) die("To meet the security requirements of DeterministicAead, this cipher can only be used with 256-bit keys");
+	if (strlen($K)<32) 
+		die("To meet the security requirements of DeterministicAead, this cipher can only be used with 256-bit keys");
 	
 	/** cmac final = SIV or initial counter */
 	
@@ -429,45 +392,11 @@ class NMR
 	*/	
 
 	$Q = $cmac_final & pack("H*","ffffffffffffffff7fffffff7fffffff");
-		
-	/** 
-	More formally, 
-	
-	   For 32 bit addition the counter is incremented as:
-	
-              SALT=leftmost(X,96)
-
-              n=rightmost(X,32)
-
-              X+i = SALT || (n + i mod 2^32).
-	
-	   For 64 bit addition the counter is incremented as:
-	
-              SALT=leftmost(X,64)
-
-              n=rightmost(X,64)
-
-              X+i = SALT || (n + i mod 2^64).
-	*/
-	
-	$addition  = '32b';
-	
-	if      ($addition=='32b')
-		{$n=4;$pack="N";}
-	else if ($addition=='64b')
-		{$n=8;$pack="L";}
 	
 	$sX	   = strlen($K)/16;
-	$key	   = substr($K,$sX*8);	
-	$Sn	   = str_split($Sn,16);	
-	$ctr	   = "";
-	foreach ($Sn as $m)
-		{
-		$ctr .= openssl_encrypt($Q, 'aes-'.($sX*64).'-ecb', $key, 1|OPENSSL_ZERO_PADDING) ^ $m ;
-		$SALT = substr($Q,0,16-$n);
-		extract(unpack($pack."count",substr($Q,-$n)));	
-		$Q    = $SALT.pack($pack, $count+1);
-		}
+	$key	   = substr($K,$sX*8);		
+	$ctr	   = $this->ctr($Sn,$Q,$sX/2,$K);
+
 	return bin2hex($cmac_final.$ctr);
       }
       
