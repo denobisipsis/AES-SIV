@@ -369,7 +369,7 @@ class NMR
 	$K2     = substr($K,$sX*8);
 	
 	$Q	= $V & pack("H*","ffffffffffffffff7fffffff7fffffff");			
-	$P	= $this->ctr($C,$Q,$sX/2,$K);	
+	$P	= $this->ctr($C,$Q,$sX/2,$K2);	
 	$T 	= $this->S2V($K,$S,$P);
 	
 	if ($T==$V) return bin2hex($P);
@@ -395,7 +395,7 @@ class NMR
 	
 	$sX	   = strlen($K)/16;
 	$key	   = substr($K,$sX*8);		
-	$ctr	   = $this->ctr($Sn,$Q,$sX/2,$K);
+	$ctr	   = $this->ctr($Sn,$Q,$sX/2,$Key);
 
 	return bin2hex($cmac_final.$ctr);
       }
