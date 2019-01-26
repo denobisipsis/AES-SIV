@@ -2,7 +2,7 @@
 /**
 *  Copyright I-2019 denobisipsis
 
-# AES SIV, CMAC & PMAC, AES EAX, OMAC-2
+# AES SIV, CMAC & PMAC, AES EAX, OMAC-2, VMAC
 
 Non Misuse Resistant cipher
 
@@ -11,6 +11,7 @@ AES_PMAC  http://web.cs.ucdavis.edu/~rogaway/ocb/pmac-bak.htm
 AES-SIV   https://tools.ietf.org/html/rfc5297
 AES_EAX   http://web.cs.ucdavis.edu/~rogaway/papers/eax.pdf
 OMAC-2    http://www.nuee.nagoya-u.ac.jp/labs/tiwata/omac/omac.html
+VMAC	  https://tools.ietf.org/html/draft-krovetz-vmac-01
 
 # USAGE 
 
@@ -21,6 +22,8 @@ $x->aes_cmac($data, $key);
 $x->aes_pmac($data, $key);
 
 $x->OMAC2($data, $key);
+
+$x->vmac($key, $m, $nonce, $taglen);
 
 $x->aes_siv_encrypt($Key,$Sn,$plaintext) 
 $x->aes_siv_decrypt($Key,$Sn,$cipher) 
@@ -35,6 +38,7 @@ $x->aes_eax_decrypt($Cipher,$Key,$Nonce,$Header)
 $x->test_cmac();
 $x->test_pmac();
 $x->test_OMAC2();
+$x->test_vmac();
 $x->test_aes_siv();
 $x->test_aes_eax();
 	
@@ -45,8 +49,6 @@ This code is placed in the public domain.
 	
 class NMR
 {
-/** aes_cmac  https://tools.ietf.org/html/rfc4493 */
-
    private function double($X)
    	{
 	/**
@@ -394,12 +396,208 @@ class NMR
 	$Q = $cmac_final & pack("H*","ffffffffffffffff7fffffff7fffffff");
 	
 	$sX	   = strlen($K)/16;
-	$key	   = substr($K,$sX*8);		
-	$ctr	   = $this->ctr($Sn,$Q,$sX/2,$Key);
+	$key	   = substr($K,$sX*8);			
+	$ctr	   = $this->ctr($Sn,$Q,$sX/2,$key);
 
 	return bin2hex($cmac_final.$ctr);
       }
-      
+
+
+	/** 
+	VMAC
+	based on 
+	http://www.fastcrypto.org/vmac/vmac.txt  
+	https://tools.ietf.org/html/draft-krovetz-vmac-01 */  
+
+	var $BLOCKLEN,$KEYLEN,$L1KEYLEN,$M64,$M126,$MP,$P64,$PP,$P127,$hbin,$h2bin,$pow2_64, $taglen;
+
+	function __construct()
+		{
+		$this->pow2_64  = bcpow(2,64);
+					
+		$this->BLOCKLEN = 128;    # block-length 
+		$this->KEYLEN   = 128;    # key-length
+		$this->L1KEYLEN = 1024;   # bits used for l1_hash (compression)
+		
+		$this->M64  = $this->big("FFFFFFFFFFFFFFFF"); 
+		$this->M126 = $this->big("3FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");
+		$this->MP   = $this->big("1FFFFFFF1FFFFFFF1FFFFFFF1FFFFFFF");    # Mask for creating poly key
+		$this->P64  = $this->big("FFFFFFFFFFFFFEFF");                    # 2^64 - 257
+		$this->PP   = $this->big("FFFFFFFF00000000");                 	 # 2^64 - 2^32
+		$this->P127 = $this->big("7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF");    # 2^127 - 1
+		}	
+	
+	private function big($hex)
+	 	{
+	     	$dec = 0;
+	     	$len = strlen($hex);
+	     	for ($i = 1; $i <= $len; $i++)
+	         	$dec = bcadd($dec, bcmul(strval(hexdec($hex[$i - 1])), bcpow('16', strval($len - $i))));	
+	     	return $dec;
+	 	}
+		 
+	private function kdf($key, $index, $numbits) 
+		{
+		/** The key-derivation function generates pseudorandom bits used by the
+		   hash function. */
+	              
+		$n 	= ceil(($numbits+$this->BLOCKLEN-1)/$this->BLOCKLEN); 
+		$prefix = chr($index).str_repeat(chr(0),14);
+		
+		$Y = ""; 
+		for ($i=0;$i<$n;$i++)
+			$Y .=openssl_encrypt($prefix.chr($i), 'aes-128-ecb', $key, 1|OPENSSL_ZERO_PADDING);
+				
+		return substr($Y,0,$numbits/8);
+		}
+	
+	private function pdf($key, $nonce, $taglen)
+		{
+		/** This function takes a key and a nonce and returns a pseudorandom pad
+		   for use in tag generation.  The length of the pad can be any positive
+		   multiple of 64 bits, up to BLOCKLEN bits.*/	
+		$tagsperblock 	= $this->BLOCKLEN/$taglen;
+		$mask 		= $tagsperblock-1;  
+		$index 		= ord(substr($nonce,-1)) & $mask;
+	
+		$tmpnonce = str_repeat(chr(0),$this->BLOCKLEN/8-strlen($nonce)).substr($nonce,0,-1).chr(ord(substr($nonce,-1))-$index);	
+		$tmpblock = openssl_encrypt($tmpnonce, 'aes-128-ecb', $key, 1|OPENSSL_ZERO_PADDING);
+		
+		return substr($tmpblock,$index*($taglen/8),$taglen/8);
+		}
+
+	private function nh($key, $m)
+		{
+		$m = array_values(unpack("Q*",$m));
+	
+		$y = 0;
+		for ($i=0;$i<sizeof($m);$i+=2)
+			{				
+			$k3 = gmp_add($key[$i],$m[$i]);
+			$k4 = gmp_add($key[$i+1],$m[$i+1]);			
+			$k5 = gmp_mul(gmp_and($k3,$this->M64) , gmp_and($k4,$this->M64));
+			$y  = gmp_add($y , $k5);
+			}
+			
+		return gmp_and($y , $this->M126);  
+		}
+	
+	private function l1_hash($key, $m, $iter)
+		{
+		/** The first-layer hash breaks the message into blocks, each of length
+		   up to L1KEYLEN (normally defined as 1024 bits), and hashes each with
+		   a function called NH.  Concatenating the results forms a string which
+		   is shorter than the original (unless the original length was no
+		   greater than 128 bits).*/
+		# Max number of bytes per NH hash
+		$bytesblock     = $this->L1KEYLEN/8; 
+	
+		$tmpk 	        = substr($this->kdf($key, 128, $this->L1KEYLEN+128*$iter),-$bytesblock); 
+		$tmpk 	        = array_values(unpack("J*",$tmpk));
+	 	
+		$m = str_split($m,$bytesblock);
+	
+		$y = array();                              
+		for  ($i=0;$i<sizeof($m)-1;$i++)                   			
+			{$y[] 	= $this->nh($tmpk,$m[$i]);}	
+		
+		$s 	= strlen($m[$i])*8;
+		$mod	= $s % $bytesblock;				
+		if ($mod) 
+			$m[$i] .= str_repeat("\0",($bytesblock-$mod)/8);    
+	
+		$y[] 	= $this->nh($tmpk,$m[$i]);
+				 					
+		return $y;                             
+		}
+
+	private function l2_hash($key, $m, $bitlen, $iter)
+		{
+		/**
+		The second-layer rehashes the L1-HASH output using a polynomial hash
+		*/
+		
+		$t = str_split(substr($this->kdf($key, 192, 128 * ($iter+1)),-16),8);		
+
+		$q0 = $this->big(bin2hex($t[0]));
+		$q1 = $this->big(bin2hex($t[1]));
+		
+		$t1 = gmp_mul(gmp_and($q0,$this->MP),$this->pow2_64);
+		$t2 = gmp_and($q1,$this->MP);
+				
+		$k = $y = $t1 | $t2;
+	
+		if (sizeof($m))
+			{
+			# Compute polynomial using Horner's rule	
+			$y = 1;                         		
+			for ($x=0;$x<sizeof($m);$x++)                   
+				$y = gmp_mod(gmp_add(gmp_mul($y , $k) , $m[$x]) , $this->P127);
+			}
+	
+		return gmp_mod(gmp_add($y , gmp_mul($bitlen % $this->L1KEYLEN , $this->pow2_64)) , $this->P127);
+		}
+
+	private function l3_hash($key, $m, $iter)
+		{
+		/** The output from L2-HASH is 128 bits long.  This final hash function
+		   hashes the 128-bit string to a fixed length of 64 bits.*/
+		# Generate key. 1/2^55 chance that it fails the first time (and so loop)
+	
+		$i 	= 1;
+		$need 	= $iter + 1;
+	
+		while ($need > 0)
+			{	
+			$t  = str_split(substr($this->kdf($key, 224, 128 * $i),-16),8);
+			
+			$q0 = $this->big(bin2hex($t[0]));
+			$q1 = $this->big(bin2hex($t[1]));
+
+			$i++;
+			
+			if (gmp_cmp($this->P64, $q0) and gmp_cmp($this->P64 , $q1))
+				$need--;									
+			}
+		
+		$m0 	= gmp_add(gmp_div($m , $this->PP),$q0);
+		$m1 	= gmp_add(gmp_mod($m , $this->PP),$q1);
+	
+		return gmp_mod(gmp_mul($m0 , $m1) , $this->P64);
+		}		
+
+	private function vhash($key, $m, $taglen)
+		{
+		/** VHASH is a keyed hash function, which takes as input a string and
+		   produces a string output with length that is a multiple of 64 bits.*/
+		$y = array();
+	
+		for ($i=0;$i<$taglen/64;$i++)
+			{
+			$a  = $this->l1_hash($key,$m,$i);	
+			$b  = $this->l2_hash($key,$a,strlen($m)*8,$i);			
+			$y[]= $this->l3_hash($key,$b,$i);			
+			}
+	
+		return $y;
+		}
+
+	function vmac($key, $m, $nonce, $taglen)
+		{	 
+		/** The length of the
+		   pad and hash can be any positive multiple of 64 bits, up to BLOCKLEN
+		   bits*/  
+		                              
+		$hash = $this->vhash($key,$m,$taglen); 	
+		$pad  = str_split(bin2hex($this->pdf($key,$nonce,$taglen)),16);
+	
+		$tag  = "";
+		for ($i=0;$i<$taglen/64;$i++)	
+			$tag .= gmp_Export(gmp_and(gmp_add($hash[$i] , $this->big($pad[$i])),$this->M64));
+			
+		return bin2hex($tag);	    
+		}
+	      
     public function test_cmac()
     	{
 	echo "CMAC TEST VECTORS https://raw.githubusercontent.com/miscreant/miscreant.js/master/vectors/aes_cmac.tjson\n\n";
@@ -466,6 +664,16 @@ class NMR
 		echo "Decrypted	".$this->aes_eax_decrypt(pack("H*",$cipher),$key,$nonce,$header)."\n\n";
 		}	    
 	}
+    public function test_vmac()
+    	{
+	echo "VMAC TEST VECTORS http://www.fastcrypto.org/vmac/draft-krovetz-vmac-01.txt\n\n";
+	foreach (array(0,1,16,100,1000000) as $c)
+		{
+		echo $this->vmac("abcdefghijklmnop",str_repeat("abc",$c),"bcdefghi",64)." ";
+		echo $this->vmac("abcdefghijklmnop",str_repeat("abc",$c),"bcdefghi",128)."\n";
+		}
+	echo "\n";	    
+	}
 }
 
 $x = new NMR;
@@ -473,6 +681,7 @@ $x = new NMR;
 $x->test_cmac();
 $x->test_pmac();
 $x->test_OMAC2();
+$x->test_vmac();
 $x->test_aes_siv();
 $x->test_aes_eax();
 
