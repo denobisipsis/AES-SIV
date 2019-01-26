@@ -403,7 +403,7 @@ class NMR
       }
 
 
-	/** 
+	/* 
 	VMAC
 	based on 
 	http://www.fastcrypto.org/vmac/vmac.txt  
