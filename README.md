@@ -1,6 +1,6 @@
 # AES-SIV
 
-Included AES-CMAC &amp; AES_PMAC, OMAC2 & EAX
+Included AES-CMAC &amp; AES_PMAC, OMAC2 & EAX, VMAC
 
 *  Copyright I-2019 denobisipsis
 
